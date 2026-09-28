@@ -2,9 +2,9 @@ name: Test
 
 on:
   pull_request:
-    branches: [main]
+    branches: [termind]
   push:
-    branches: [main]
+    branches: [termind]
   workflow_dispatch:
 
 concurrency:
