@@ -13,7 +13,7 @@ let package = Package(
             path: "Source",
             linkerSettings: [.linkedLibrary("z")]
         ),
-        .binaryTarget(name: "CSSH2Native", path: "BinaryTarget/CSSH2Native.xcframework"),
+        .binaryTarget(name: "CSSH2Native", url: "https://github.com/AkinoKaede/libssh2-spm/releases/download/binary.7de8997d60ec.37089190589/CSSH2Native.xcframework.zip", checksum: "2f40606e507a1c3d4be544ede6e723726c07dd9ea049b20b2ff3d71a34188f7a"),
         .testTarget(name: "CSSH2Test", dependencies: ["CSSH2"]),
     ]
 )
