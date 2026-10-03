@@ -6,70 +6,52 @@ on:
   push:
     branches: [termind]
   workflow_dispatch:
+  workflow_call:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 jobs:
+  source:
+    name: Native patch regressions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Prepare and test patched source
+        run: |
+          python3 Script/test-source.py
+          python3 Script/prepare-source.py
+          cmake -S .build/patched-native -B .build/native -DCRYPTO_BACKEND=OpenSSL -DBUILD_SHARED_LIBS=OFF -DBUILD_EXAMPLES=OFF -DRUN_DOCKER_TESTS=OFF -DRUN_SSHD_TESTS=OFF
+          cmake --build .build/native --parallel 2
+          ctest --test-dir .build/native --output-on-failure
+          test -z "$(git -C Vendor/libssh2 status --porcelain)"
+
   build:
-    name: Build (${{ matrix.platform }})
-    runs-on: macos-14
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - macOS
-          - macOS,variant=Mac Catalyst
-          - iOS
-          - iOS Simulator
-          - tvOS
-          - tvOS Simulator
-          - watchOS
-          - watchOS Simulator
-          - xrOS
-          - xrOS Simulator
+    name: XCFramework and Apple consumer matrix
+    runs-on: macos-26
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Setup Xcode
-        uses: maxim-lobanov/setup-xcode@v1
+      - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
-
-      - name: Install xcbeautify
+      - name: Install test formatter
         run: brew install xcbeautify
-
-      - name: Build
+      - name: Download pinned OpenSSL headers
+        run: bash Script/download-openssl.sh
+      - name: Build patched XCFramework
+        run: python3 Script/build-xcframework.py --openssl .build/openssl/OpenSSL.Package.xcframework
+      - name: Verify binary consumers
         run: |
-          set -o pipefail
-          xcodebuild -scheme CSSH2 \
-            -destination "generic/platform=${{ matrix.platform }}" \
-            | xcbeautify
-
-  test:
-    name: Test (macOS)
-    runs-on: macos-14
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+          python3 Script/build-manifest.py --local BinaryTarget/CSSH2Native.xcframework
+          swift test
+          ./Script/test.sh
+          test -z "$(git -C Vendor/libssh2 status --porcelain)"
+      - uses: actions/upload-artifact@v4
         with:
-          submodules: recursive
-
-      - name: Setup Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
-
-      - name: Install xcbeautify
-        run: brew install xcbeautify
-
-      - name: Run Tests
-        run: |
-          set -o pipefail
-          xcodebuild test -scheme CSSH2 \
-            -destination "platform=macOS" \
-            | xcbeautify
+          name: CSSH2Native-xcframework
+          path: .build/CSSH2Native.xcframework.zip
+          if-no-files-found: error

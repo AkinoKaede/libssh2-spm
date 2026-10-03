@@ -1,0 +1,62 @@
+name: Release XCFramework
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-xcframework
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/test.yml
+  publish:
+    needs: verify
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: CSSH2Native-xcframework
+          path: .build
+      - name: Publish immutable artifact and package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_VERSION: ${{ inputs.version }}
+          BUILD_COMMIT: ${{ github.sha }}
+          RELEASE_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test "$RELEASE_BRANCH" = termind
+          test "$(git rev-parse HEAD)" = "$BUILD_COMMIT"
+          [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]
+          if git rev-parse "refs/tags/$PACKAGE_VERSION" >/dev/null 2>&1; then
+            echo 'Package tag already exists' >&2
+            exit 1
+          fi
+          storage_tag="binary.${BUILD_COMMIT:0:12}.${GITHUB_RUN_ID}"
+          gh release create "$storage_tag" .build/CSSH2Native.xcframework.zip \
+            --target "$BUILD_COMMIT" --title "CSSH2 native binary $storage_tag" \
+            --notes 'CI-built libssh2 from the official submodule with external-signature patches. Native regression tests and all Apple consumer builds passed.'
+          download_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$storage_tag/CSSH2Native.xcframework.zip"
+          python3 Script/build-manifest.py --archive .build/CSSH2Native.xcframework.zip --url "$download_url"
+          swift test
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Package.swift
+          git commit -m "build: publish CSSH2 binary $PACKAGE_VERSION"
+          git tag -a "$PACKAGE_VERSION" -m "CI-built CSSH2 $PACKAGE_VERSION"
+          git push --atomic origin "HEAD:refs/heads/$RELEASE_BRANCH" "refs/tags/$PACKAGE_VERSION"
+          gh release create "$PACKAGE_VERSION" --verify-tag --title "$PACKAGE_VERSION" \
+            --notes "Official libssh2 submodule plus CI-applied signature patches, distributed as a checksummed XCFramework. Native artifact: $storage_tag"

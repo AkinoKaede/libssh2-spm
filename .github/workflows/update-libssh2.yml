@@ -1,4 +1,4 @@
-name: Update libssh2 fork
+name: Update libssh2
 
 on:
   workflow_dispatch:
@@ -8,9 +8,10 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 concurrency:
-  group: update-libssh2-fork
+  group: update-libssh2
   cancel-in-progress: false
 
 jobs:
@@ -19,42 +20,52 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
           ref: termind
-      - name: Find latest Termind fork tag
+          submodules: recursive
+      - name: Find latest official stable release
         id: release
-        working-directory: Vendor/libssh2
         run: |
           set -euo pipefail
-          latest=$(git ls-remote --tags --refs origin 'libssh2-*-termind-*' \
-            | awk '{print $2}' \
-            | sed 's#refs/tags/##' \
-            | grep -E '^libssh2-[0-9]+\.[0-9]+\.[0-9]+-termind-[0-9]+$' \
-            | sort -V | tail -n 1)
+          upstream=https://github.com/libssh2/libssh2.git
+          latest=$(git ls-remote --tags --refs "$upstream" 'libssh2-*' \
+            | awk '{print $2}' | sed 's#refs/tags/##' \
+            | grep -E '^libssh2-[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
           test -n "$latest"
-          git fetch origin "refs/tags/$latest:refs/tags/$latest"
-          current=$(git rev-parse HEAD)
-          target=$(git rev-parse "refs/tags/$latest^{commit}")
+          source_repo=$(mktemp -d)
+          trap 'rm -rf "$source_repo"' EXIT
+          git -C "$source_repo" init --bare --quiet
+          git -C "$source_repo" fetch --quiet --depth=1 "$upstream" "refs/tags/$latest"
+          target=$(git -C "$source_repo" rev-parse 'FETCH_HEAD^{commit}')
           echo "tag=$latest" >> "$GITHUB_OUTPUT"
-          if [ "$current" = "$target" ]; then
+          if [ "$(git -C Vendor/libssh2 rev-parse HEAD)" = "$target" ]; then
             echo 'changed=false' >> "$GITHUB_OUTPUT"
           else
-            git checkout --detach "$target"
-            grep -q libssh2_userauth_publickey_signed include/libssh2.h
+            git -C Vendor/libssh2 fetch --depth=1 origin "$target"
+            git -C Vendor/libssh2 checkout --detach "$target"
             echo 'changed=true' >> "$GITHUB_OUTPUT"
           fi
-      - name: Test external signature API
+      - name: Test patched source
         if: steps.release.outputs.changed == 'true'
         run: |
-          cmake -S Vendor/libssh2 -B /tmp/libssh2-build -DCRYPTO_BACKEND=OpenSSL -DBUILD_SHARED_LIBS=OFF -DBUILD_EXAMPLES=OFF -DRUN_DOCKER_TESTS=OFF -DRUN_SSHD_TESTS=OFF
-          cmake --build /tmp/libssh2-build -j 2
-          ctest --test-dir /tmp/libssh2-build --output-on-failure
+          python3 Script/test-source.py
+          python3 Script/prepare-source.py
+          cmake -S .build/patched-native -B .build/native -DCRYPTO_BACKEND=OpenSSL -DBUILD_SHARED_LIBS=OFF -DBUILD_EXAMPLES=OFF -DRUN_DOCKER_TESTS=OFF -DRUN_SSHD_TESTS=OFF
+          cmake --build .build/native --parallel 2
+          ctest --test-dir .build/native --output-on-failure
+          git add Vendor/libssh2
       - uses: peter-evans/create-pull-request@v6
+        id: pull-request
         if: steps.release.outputs.changed == 'true'
         with:
           base: termind
-          branch: update-libssh2-fork
-          add-paths: Vendor/libssh2
-          title: 'Update libssh2 to ${{ steps.release.outputs.tag }}'
-          commit-message: 'Update libssh2 to ${{ steps.release.outputs.tag }}'
-          body: 'Update the nested libssh2 fork to ${{ steps.release.outputs.tag }}, preserving and testing the complete external-signature API.'
+          branch: update-libssh2
+          add-paths: |
+            Vendor/libssh2
+          title: 'build: update libssh2 to ${{ steps.release.outputs.tag }}'
+          commit-message: 'build: update libssh2 to ${{ steps.release.outputs.tag }}'
+          body: 'Update the official submodule pin. Native external-signature regressions passed. Require the dispatched XCFramework and Apple consumer checks before merging, then run Release XCFramework to publish a new package version.'
+      - name: Dispatch Apple platform and source checks
+        if: steps.pull-request.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run test.yml --ref update-libssh2
